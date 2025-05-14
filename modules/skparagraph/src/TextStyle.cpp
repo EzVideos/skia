@@ -168,7 +168,10 @@ void TextStyle::getFontMetrics(SkFontMetrics* metrics) const {
     SkFont font(fTypeface, fFontSize);
     font.setEdging(SkFont::Edging::kAntiAlias);
     font.setSubpixel(true);
-    font.setHinting(SkFontHinting::kSlight);
+    font.setHinting(SkFontHinting::kNone);
+    font.setLinearMetrics(true);
+    font.setBaselineSnap(false);
+    font.setEmbeddedBitmaps(false);
     font.getMetrics(metrics);
     if (fHeightOverride) {
         auto multiplier = fHeight * fFontSize;

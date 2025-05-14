@@ -685,7 +685,10 @@ std::unique_ptr<Run> TextLine::shapeEllipsis(const SkString& ellipsis, const Clu
         ShapeHandler handler(run.heightMultiplier(), run.useHalfLeading(), run.baselineShift(), ellipsis);
         SkFont font(std::move(typeface), textStyle.getFontSize());
         font.setEdging(SkFont::Edging::kAntiAlias);
-        font.setHinting(SkFontHinting::kSlight);
+        font.setHinting(SkFontHinting::kNone);
+        font.setLinearMetrics(true);
+        font.setBaselineSnap(false);
+        font.setEmbeddedBitmaps(false);
         font.setSubpixel(true);
 
         std::unique_ptr<SkShaper> shaper = SkShapers::HB::ShapeDontWrapOrReorder(

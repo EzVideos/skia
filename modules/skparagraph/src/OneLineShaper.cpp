@@ -650,7 +650,10 @@ bool OneLineShaper::shape() {
                 // Create one more font to try
                 SkFont font(std::move(typeface), block.fStyle.getFontSize());
                 font.setEdging(SkFont::Edging::kAntiAlias);
-                font.setHinting(SkFontHinting::kSlight);
+                font.setHinting(SkFontHinting::kNone);
+                font.setLinearMetrics(true);
+                font.setBaselineSnap(false);
+                font.setEmbeddedBitmaps(false);
                 font.setSubpixel(true);
 
                 // Apply fake bold and/or italic settings to the font if the
