@@ -22,27 +22,11 @@
 
 #include <limits>
 #include <numeric>
+#include <optional>
 
 namespace skgpu::graphite {
 
 namespace {
-
-// TODO: Tune these values on real world data
-static constexpr uint32_t kVertexBufferMinSize = 16 << 10; // 16 KB
-static constexpr uint32_t kVertexBufferMaxSize =  1 << 20; //  1 MB
-static constexpr uint32_t kIndexBufferSize   = 2 << 10; // 2 KB
-static constexpr uint32_t kUniformBufferSize = 2 << 10; // 2 KB
-static constexpr uint32_t kStorageBufferMinSize = 2 << 10; // 2 KB
-static constexpr uint32_t kStorageBufferMaxSize = 1 << 20; // 1 MB
-
-// Make sure the buffer size constants are all powers of two, so we can align to them efficiently
-// when dynamically sizing buffers.
-static_assert(SkIsPow2(kVertexBufferMinSize));
-static_assert(SkIsPow2(kVertexBufferMaxSize));
-static_assert(SkIsPow2(kIndexBufferSize));
-static_assert(SkIsPow2(kUniformBufferSize));
-static_assert(SkIsPow2(kStorageBufferMinSize));
-static_assert(SkIsPow2(kStorageBufferMaxSize));
 
 // The limit for all data created by the StaticBufferManager. This data remains alive for
 // the entire SharedContext so we want to keep it small and give a concrete upper bound to
@@ -82,14 +66,6 @@ uint32_t sufficient_block_size(uint32_t requiredBytes, uint32_t blockSize) {
     uint32_t bufferSize = blocks > maxBlocks ? kMaxSize : (blocks * blockSize);
     SkASSERT(requiredBytes < bufferSize);
     return bufferSize;
-}
-
-bool can_fit(uint32_t requestedSize,
-             uint32_t allocatedSize,
-             uint32_t currentOffset,
-             uint32_t alignment) {
-    uint32_t startOffset = SkAlignTo(currentOffset, alignment);
-    return requestedSize <= (allocatedSize - startOffset);
 }
 
 // This returns the minimum required alignment depending on the type of buffer. This is guaranteed
@@ -137,6 +113,18 @@ uint32_t align_to_req_min_lcm(uint32_t bytes, uint32_t req, uint32_t min) {
     return bytes;
 }
 
+std::optional<uint32_t> can_offset_fit(uint32_t reqSize,
+                                       uint32_t allocatedSize,
+                                       uint32_t currentOffset,
+                                       uint32_t minAlignment,
+                                       uint32_t reqAlignment) {
+    uint32_t startOffset = reqAlignment ?
+                           align_to_req_min_lcm(currentOffset, reqAlignment, minAlignment) :
+                           SkAlignTo(currentOffset, minAlignment);
+    return (allocatedSize > startOffset && reqSize <= allocatedSize - startOffset) ?
+           std::optional<uint32_t>(startOffset) : std::nullopt;
+}
+
 } // anonymous namespace
 
 // ------------------------------------------------------------------------------------------------
@@ -161,12 +149,12 @@ BindBufferInfo ScratchBuffer::suballocate(size_t requiredBytes) {
     if (!this->isValid() || !requiredBytes32) {
         return {};
     }
-    if (!can_fit(requiredBytes32, fSize, fOffset, fAlignment)) {
+    std::optional<uint32_t> offset = can_offset_fit(requiredBytes32, fSize, fOffset, fAlignment, 0);
+    if (!offset.has_value()) {
         return {};
     }
-    const uint32_t offset = SkAlignTo(fOffset, fAlignment);
-    fOffset = offset + requiredBytes32;
-    return {fBuffer.get(), offset, requiredBytes32};
+    fOffset = offset.value() + requiredBytes32;
+    return {fBuffer.get(), offset.value(), requiredBytes32};
 }
 
 void ScratchBuffer::returnToPool() {
@@ -182,23 +170,43 @@ void ScratchBuffer::returnToPool() {
 
 DrawBufferManager::DrawBufferManager(ResourceProvider* resourceProvider,
                                      const Caps* caps,
-                                     UploadBufferManager* uploadManager)
+                                     UploadBufferManager* uploadManager,
+                                     DrawBufferManagerOptions dbmOpts)
         : fResourceProvider(resourceProvider)
         , fCaps(caps)
         , fUploadManager(uploadManager)
-        , fCurrentBuffers{{
-            { BufferType::kVertex,        kVertexBufferMinSize,  kVertexBufferMaxSize,  caps },
-            { BufferType::kIndex,         kIndexBufferSize,      kIndexBufferSize,      caps },
-            { BufferType::kUniform,       kUniformBufferSize,    kUniformBufferSize,    caps },
-
-            // mapped storage
-            { BufferType::kStorage,       kStorageBufferMinSize, kStorageBufferMaxSize, caps },
-            // GPU-only storage
-            { BufferType::kStorage,       kStorageBufferMinSize, kStorageBufferMinSize, caps },
-
-            { BufferType::kVertexStorage, kVertexBufferMinSize,  kVertexBufferMinSize,  caps },
-            { BufferType::kIndexStorage,  kIndexBufferSize,      kIndexBufferSize,      caps },
-            { BufferType::kIndirect,      kStorageBufferMinSize, kStorageBufferMinSize, caps } }} {}
+        , fCurrentBuffers{{{BufferType::kVertex,
+                            dbmOpts.fVertexBufferMinSize, dbmOpts.fVertexBufferMaxSize, caps},
+                           {BufferType::kIndex,
+                            dbmOpts.fIndexBufferSize, dbmOpts.fIndexBufferSize, caps},
+                           {BufferType::kUniform,
+                            dbmOpts.fUniformBufferSize, dbmOpts.fUniformBufferSize, caps},
+                           // mapped storage
+                           {BufferType::kStorage,
+                            dbmOpts.fStorageBufferMinSize, dbmOpts.fStorageBufferMaxSize, caps},
+                           // GPU-only storage
+                           {BufferType::kStorage,
+                            dbmOpts.fStorageBufferMinSize, dbmOpts.fStorageBufferMinSize, caps},
+                           {BufferType::kVertexStorage,
+                            dbmOpts.fVertexBufferMinSize, dbmOpts.fVertexBufferMinSize, caps},
+                           {BufferType::kIndexStorage,
+                            dbmOpts.fIndexBufferSize, dbmOpts.fIndexBufferSize, caps},
+                           {BufferType::kIndirect,
+                            dbmOpts.fStorageBufferMinSize, dbmOpts.fStorageBufferMinSize, caps}}}
+#if defined(GPU_TEST_UTILS)
+        , fUseExactBuffSizes(dbmOpts.fUseExactBuffSizes)
+        , fAllowCopyingGpuOnly(dbmOpts.fAllowCopyingGpuOnly)
+#endif
+{
+    // Make sure the buffer size constants are all powers of two, so we can align to them
+    // efficiently when dynamically sizing buffers.
+    SkASSERT(SkIsPow2(dbmOpts.fVertexBufferMinSize));
+    SkASSERT(SkIsPow2(dbmOpts.fVertexBufferMaxSize));
+    SkASSERT(SkIsPow2(dbmOpts.fIndexBufferSize));
+    SkASSERT(SkIsPow2(dbmOpts.fUniformBufferSize));
+    SkASSERT(SkIsPow2(dbmOpts.fStorageBufferMinSize));
+    SkASSERT(SkIsPow2(dbmOpts.fStorageBufferMaxSize));
+}
 
 DrawBufferManager::~DrawBufferManager() {}
 
@@ -215,18 +223,33 @@ DrawBufferManager::BufferInfo::BufferInfo(BufferType type,
         , fMaxBlockSize(maxBlockSize)
         , fCurBlockSize(SkAlignTo(minBlockSize, fMinimumAlignment)) {}
 
+bool DrawBufferManager::willVertexOverflow(size_t count, size_t dataStride,
+                                           size_t alignStride) const {
+    uint32_t requiredBytes = validate_count_and_stride(count, dataStride);
+    const BufferInfo& vertBuff = fCurrentBuffers[kVertexBufferIndex];
+    if (!requiredBytes || !vertBuff.fBuffer) {
+        return false;
+    }
+    return !can_offset_fit(requiredBytes,
+                          SkTo<uint32_t>(vertBuff.fBuffer->size()),
+                          vertBuff.fOffset,
+                          vertBuff.fMinimumAlignment,
+                          alignStride).has_value();
+}
+
 // For the vertexWriter, we explicitly pass in the required stride to align the mapped
 // bindBuffer to try to keep the buffer contiguous with future vertex data.
 std::pair<VertexWriter, BindBufferInfo> DrawBufferManager::getVertexWriter(size_t count,
-                                                                           size_t stride) {
-    uint32_t requiredBytes = validate_count_and_stride(count, stride);
+                                                                           size_t dataStride,
+                                                                           size_t alignStride) {
+    uint32_t requiredBytes = validate_count_and_stride(count, dataStride);
     if (!requiredBytes) {
         return {};
     }
 
     auto& info = fCurrentBuffers[kVertexBufferIndex];
     auto [ptr, bindInfo] =
-        this->prepareMappedBindBuffer(&info, "VertexBuffer", requiredBytes, stride);
+        this->prepareMappedBindBuffer(&info, "VertexBuffer", requiredBytes, alignStride);
     return {VertexWriter(ptr, requiredBytes), bindInfo};
 }
 
@@ -370,7 +393,13 @@ ScratchBuffer DrawBufferManager::getScratchStorage(size_t requiredBytes) {
 
     // TODO: Generalize the pool to other buffer types.
     auto& info = fCurrentBuffers[kStorageBufferIndex];
-    uint32_t bufferSize = sufficient_block_size(requiredBytes32, info.fCurBlockSize);
+
+    uint32_t bufferSize =
+#if defined(GPU_TEST_UTILS)
+            fUseExactBuffSizes ? info.fCurBlockSize :
+#endif
+                                 sufficient_block_size(requiredBytes32, info.fCurBlockSize);
+
     sk_sp<Buffer> buffer = this->findReusableSbo(bufferSize);
     if (!buffer) {
         buffer = fResourceProvider->findOrCreateBuffer(
@@ -489,6 +518,19 @@ bool DrawBufferManager::transferToRecording(Recording* recording) {
     return true;
 }
 
+// Only when defined(GPU_TEST_UTILS) do we allow enabling copying.
+AccessPattern DrawBufferManager::getGpuAccessPattern(bool isGpuOnlyAccess) const {
+    if (isGpuOnlyAccess) {
+#if defined(GPU_TEST_UTILS)
+        return fAllowCopyingGpuOnly ? AccessPattern::kGpuOnlyCopySrc : AccessPattern::kGpuOnly;
+#else
+        return AccessPattern::kGpuOnly;
+#endif
+    } else {
+        return AccessPattern::kHostVisible;
+    }
+}
+
 std::pair<void*, BindBufferInfo> DrawBufferManager::prepareMappedBindBuffer(
         BufferInfo* info,
         std::string_view label,
@@ -531,36 +573,23 @@ BindBufferInfo DrawBufferManager::prepareBindBuffer(BufferInfo* info,
         return {};
     }
 
-    // A transfer buffer is not necessary if the caller does not intend to upload CPU data to it.
-    bool useTransferBuffer = supportCpuUpload && !fCaps->drawBufferCanBeMapped();
-
-    if (requiredAlignment == 0) {
-        // If explicitly required alignment is not provided, use the default buffer alignment.
-        requiredAlignment = info->fMinimumAlignment;
-
-    } else {
-        // If an explicitly required alignment is provided, use that instead of the default buffer
-        // alignment. This is useful when the offset is used as an index into a storage buffer
-        // rather than an offset for an actual binding.
-        info->fOffset =
-            align_to_req_min_lcm(info->fOffset, requiredAlignment, info->fMinimumAlignment);
-
-        // Don't align the offset any further.
-        requiredAlignment = 1;
-    }
-
-    const bool overflowedBuffer =
-            info->fBuffer && (info->fOffset >= SkTo<uint32_t>(info->fBuffer->size()) ||
-                              !can_fit(requiredBytes,
-                                       SkTo<uint32_t>(info->fBuffer->size()),
-                                       info->fOffset,
-                                       requiredAlignment));
+    auto offset = info->fBuffer ? can_offset_fit(requiredBytes,
+                                                 SkTo<uint32_t>(info->fBuffer->size()),
+                                                 info->fOffset,
+                                                 info->fMinimumAlignment,
+                                                 requiredAlignment)
+                                : std::optional<uint32_t>(0);
+    const bool overflowedBuffer = !offset.has_value();
     if (overflowedBuffer) {
         fUsedBuffers.emplace_back(std::move(info->fBuffer), info->fTransferBuffer);
         info->fTransferBuffer = {};
         info->fUsedSize += info->fOffset;
+    } else {
+        info->fOffset = offset.value();
     }
 
+    // A transfer buffer is not necessary if the caller does not intend to upload CPU data to it.
+    const bool useTransferBuffer = supportCpuUpload && !fCaps->drawBufferCanBeMapped();
     if (!info->fBuffer) {
         // Create the first buffer with the full fCurBlockSize, but create subsequent buffers with a
         // smaller size if fCurBlockSize has increased from the minimum. This way if we use just a
@@ -569,19 +598,20 @@ BindBufferInfo DrawBufferManager::prepareBindBuffer(BufferInfo* info,
         const uint32_t blockSize = overflowedBuffer
                                            ? std::max(info->fCurBlockSize / 4, info->fMinBlockSize)
                                            : info->fCurBlockSize;
-        const uint32_t bufferSize = sufficient_block_size(requiredBytes, blockSize);
+        const uint32_t bufferSize =
+#if defined(GPU_TEST_UTILS)
+            fUseExactBuffSizes ? info->fCurBlockSize :
+#endif
+                                 sufficient_block_size(requiredBytes, blockSize);
 
         // This buffer can be GPU-only if
         //     a) the caller does not intend to ever upload CPU data to the buffer; or
         //     b) CPU data will get uploaded to fBuffer only via a transfer buffer
-        AccessPattern accessPattern = (useTransferBuffer || !supportCpuUpload)
-                                              ? AccessPattern::kGpuOnly
-                                              : AccessPattern::kHostVisible;
-
-        info->fBuffer = fResourceProvider->findOrCreateBuffer(bufferSize,
-                                                              info->fType,
-                                                              accessPattern,
-                                                              std::move(label));
+        info->fBuffer = fResourceProvider->findOrCreateBuffer(
+                bufferSize,
+                info->fType,
+                this->getGpuAccessPattern(useTransferBuffer || !supportCpuUpload),
+                std::move(label));
         info->fOffset = 0;
         if (!info->fBuffer) {
             this->onFailedBuffer();
@@ -594,7 +624,6 @@ BindBufferInfo DrawBufferManager::prepareBindBuffer(BufferInfo* info,
                 fUploadManager->makeBindInfo(info->fBuffer->size(),
                                              fCaps->requiredTransferBufferAlignment(),
                                              "TransferForDataBuffer");
-
         if (!info->fTransferBuffer) {
             this->onFailedBuffer();
             return {};
@@ -602,7 +631,8 @@ BindBufferInfo DrawBufferManager::prepareBindBuffer(BufferInfo* info,
         SkASSERT(info->fTransferMapPtr);
     }
 
-    info->fOffset = SkAlignTo(info->fOffset, requiredAlignment);
+    SkASSERT(info->fOffset % (requiredAlignment ?
+            requiredAlignment : info->fMinimumAlignment) == 0);
     BindBufferInfo bindInfo{info->fBuffer.get(), info->fOffset, requiredBytes};
     info->fOffset += requiredBytes;
 
@@ -650,13 +680,19 @@ StaticBufferManager::BufferInfo::BufferInfo(BufferType type, const Caps* caps)
         , fMinimumAlignment(minimum_alignment(type, /*useTransferBuffers=*/true, caps))
         , fTotalRequiredBytes(0) {}
 
+// ARM hardware b/399631317 also means that static vertex data must be padded and zeroed out. So we
+// always request a count 4 aligned offset, count 4 aligned amount of space, and zero it.
 VertexWriter StaticBufferManager::getVertexWriter(size_t count,
                                                   size_t stride,
                                                   BindBufferInfo* binding) {
     const size_t size = count * stride;
-    // We align the stride of the static buffer to 4 to accomodate driver issues on ARM hardware,
-    // when converting byte offsets into base vertex.
+    const size_t alignedCount = SkAlign4(count);
     void* data = this->prepareStaticData(&fVertexBufferInfo, size, stride * 4, binding);
+    if (alignedCount > count) {
+        const uint32_t byteDiff = (alignedCount - count) * stride;
+        void* zPtr = SkTAddOffset<void>(data, count * stride);
+        memset(zPtr, 0, byteDiff);
+    }
     return VertexWriter{data, size};
 }
 
@@ -682,11 +718,10 @@ void* StaticBufferManager::prepareStaticData(BufferInfo* info,
         return nullptr;
     }
 
+    // Copy data must be aligned to the transfer alignment, so align the reserved size to the LCM
+    // of the minimum alignment (already net buffer and transfer alignment) and the required
+    // alignment stride.
     size32 = align_to_req_min_lcm(size32, requiredAlignment, info->fMinimumAlignment);
-
-    // Copies must copy an amount of bytes aligned to the transfer alignment. For simplicity, we
-    // align the reserved size to the LCM of the minimum alignment (already net buffer and transfer
-    // alignment) and the required alignment stride.
     auto [transferMapPtr, transferBindInfo] =
             fUploadManager.makeBindInfo(size32,
                                         fRequiredTransferAlignment,
@@ -697,7 +732,11 @@ void* StaticBufferManager::prepareStaticData(BufferInfo* info,
         return nullptr;
     }
 
+#if defined(GPU_TEST_UTILS)
+    info->fData.push_back({transferBindInfo, target, requiredAlignment, requiredBytes});
+#else
     info->fData.push_back({transferBindInfo, target, requiredAlignment});
+#endif
     info->fTotalRequiredBytes =
         align_to_req_min_lcm(info->fTotalRequiredBytes,
                              requiredAlignment,
@@ -715,8 +754,19 @@ bool StaticBufferManager::BufferInfo::createAndUpdateBindings(
         return true; // No buffer needed
     }
 
+    // The static buffer is always copyable when testing.
+    constexpr AccessPattern gpuAccessPattern =
+#if defined(GPU_TEST_UTILS)
+        AccessPattern::kGpuOnlyCopySrc;
+#else
+        AccessPattern::kGpuOnly;
+#endif
+
     sk_sp<Buffer> staticBuffer = resourceProvider->findOrCreateBuffer(
-            fTotalRequiredBytes, fBufferType, AccessPattern::kGpuOnly, std::move(label));
+            fTotalRequiredBytes,
+            fBufferType,
+            gpuAccessPattern,
+            std::move(label));
     if (!staticBuffer) {
         SKGPU_LOG_E("Failed to create static buffer for type %d of size %u bytes.\n",
                     (int) fBufferType, fTotalRequiredBytes);
@@ -776,6 +826,20 @@ StaticBufferManager::FinishResult StaticBufferManager::finalize(Context* context
                                                    "StaticVertexBuffer")) {
         return FinishResult::kFailure;
     }
+
+#if defined(GPU_TEST_UTILS)
+    skia_private::TArray<GlobalCache::StaticVertexCopyRanges> statVertCopy;
+    for (const CopyRange& data : fVertexBufferInfo.fData) {
+        statVertCopy.push_back({data.fTarget->fOffset,
+                                data.fUnalignedSize,
+                                data.fTarget->fSize,
+                                data.fRequiredAlignment});
+    }
+    globalCache->testingOnly_SetStaticVertexInfo(
+            statVertCopy,
+            fVertexBufferInfo.fData[0].fTarget->fBuffer);
+#endif
+
     if (!fIndexBufferInfo.createAndUpdateBindings(fResourceProvider,
                                                   context,
                                                   queueManager,

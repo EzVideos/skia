@@ -36,6 +36,7 @@ struct RenderPassDesc;
 class RenderStep;
 struct ResourceBindingRequirements;
 class ShaderCodeDictionary;
+enum class TextureFormat : uint8_t;
 class UniformManager;
 class UniquePaintParamsID;
 
@@ -71,7 +72,9 @@ void CollectIntrinsicUniforms(const Caps* caps,
                               SkIRect dstReadBounds,
                               UniformManager*);
 
-bool IsDstReadRequired(const Caps*, std::optional<SkBlendMode>, Coverage);
+// Returns whether or not hardware blending can be used. If not, we must perform a dst read within
+// the shader.
+bool CanUseHardwareBlending(const Caps*, TextureFormat, std::optional<SkBlendMode>, Coverage);
 
 std::string GetPipelineLabel(const ShaderCodeDictionary*,
                              const RenderPassDesc& renderPassDesc,

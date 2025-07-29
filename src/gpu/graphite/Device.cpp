@@ -30,7 +30,6 @@
 #include "src/gpu/graphite/RecorderPriv.h"
 #include "src/gpu/graphite/Renderer.h"
 #include "src/gpu/graphite/RendererProvider.h"
-#include "src/gpu/graphite/ResourceTypes.h"
 #include "src/gpu/graphite/SharedContext.h"
 #include "src/gpu/graphite/SpecialImage_Graphite.h"
 #include "src/gpu/graphite/Surface_Graphite.h"
@@ -293,6 +292,15 @@ Rect get_inner_bounds(const Geometry& geometry, const Transform& localToDevice) 
 
 SkIRect rect_to_pixelbounds(const Rect& r) {
     return r.makeRoundOut().asSkIRect();
+}
+
+bool is_pixel_aligned(const Rect& r, const Transform& t) {
+    if (t.type() <= Transform::Type::kRectStaysRect) {
+        Rect devRect = t.mapRect(r);
+        return devRect.nearlyEquals(devRect.makeRound());
+    }
+
+    return false;
 }
 
 bool is_simple_shape(const Shape& shape, SkStrokeRec::Style type) {
@@ -949,7 +957,7 @@ void Device::drawPath(const SkPath& path, const SkPaint& paint, bool pathIsMutab
         if (path.isLine(linePts)) {
             // A line has zero area, so stroke and stroke-and-fill are equivalent
             if (paint.getStyle() != SkPaint::kFill_Style) {
-                this->drawPoints(SkCanvas::kLines_PointMode, 2, linePts, paint);
+                this->drawPoints(SkCanvas::kLines_PointMode, linePts, paint);
             } // and if it's fill, nothing is drawn
             return;
         }
@@ -975,8 +983,13 @@ void Device::drawPath(const SkPath& path, const SkPaint& paint, bool pathIsMutab
                        paint, SkStrokeRec(paint));
 }
 
-void Device::drawPoints(SkCanvas::PointMode mode, size_t count,
-                        const SkPoint* points, const SkPaint& paint) {
+void Device::drawPoints(SkCanvas::PointMode mode, SkSpan<const SkPoint> points,
+                        const SkPaint& paint) {
+    if (points.empty()) {
+        return;
+    }
+    size_t count = points.size();
+
     SkStrokeRec stroke(paint, SkPaint::kStroke_Style);
     size_t next = 0;
     if (mode == SkCanvas::kPoints_PointMode) {
@@ -1266,29 +1279,40 @@ void Device::drawGeometry(const Transform& localToDevice,
     // drawing twice--one stroke and one fill--using the same depth value.
     SkASSERT(!SkToBool(paint.getPathEffect()) || (flags & DrawFlags::kIgnorePathEffect));
 
-    // TODO: Some renderer decisions could depend on the clip (see PathAtlas::addShape for
-    // one workaround) so we should figure out how to remove this circular dependency.
+    // Calculate the clipped bounds of the draw and determine the clip elements that affect the
+    // draw without updating the clip stack.
+    ClipStack::ElementList clipElements;
+    Clip clip = fClip.visitClipStackForDraw(localToDevice,
+                                            geometry,
+                                            style,
+                                            fMSAASupported,
+                                            &clipElements);
+    if (clip.isClippedOut()) {
+        // Clipped out, so don't record anything.
+        return;
+    }
 
     // We assume that we will receive a renderer, or a PathAtlas. If it's a PathAtlas,
     // then we assume that the renderer chosen in PathAtlas::addShape() will have
     // single-channel coverage, require AA bounds outsetting, and have a single renderStep.
-    auto [renderer, pathAtlas] =
-            this->chooseRenderer(localToDevice, geometry, style, /*requireMSAA=*/false);
+    // The clip's draw bounds are passed in for heuristics, so it's fine if it doesn't include the
+    // AA outsetting we add for some analytic coverage renderers.
+    auto [renderer, pathAtlas] = this->chooseRenderer(localToDevice,
+                                                      geometry,
+                                                      style,
+                                                      clip.drawBounds(),
+                                                      /*requireMSAA=*/false);
     if (!renderer && !pathAtlas) {
         SKGPU_LOG_W("Skipping draw with no supported renderer or PathAtlas.");
         return;
     }
 
-    // Calculate the clipped bounds of the draw and determine the clip elements that affect the
-    // draw without updating the clip stack.
-    const bool outsetBoundsForAA = renderer ? renderer->outsetBoundsForAA() : true;
-    ClipStack::ElementList clipElements;
-    const Clip clip =
-            fClip.visitClipStackForDraw(localToDevice, geometry, style, outsetBoundsForAA,
-                                        fMSAASupported, &clipElements);
-    if (clip.isClippedOut()) {
-        // Clipped out, so don't record anything.
-        return;
+    // Update the pixel bounds of the draw to include any outsets done by the renderer (or that
+    // must be included in the pixels required when using an atlas). This is important so that
+    // all bounds overlap checks take into account pixels touched by rasterization, even if the
+    // calculated coverage for a pixel is 0.
+    if (!renderer || renderer->outsetBoundsForAA()) {
+        clip.outsetBoundsForAA();
     }
 
     // Figure out what dst color requirements we have, if any.
@@ -1302,7 +1326,12 @@ void Device::drawGeometry(const Transform& localToDevice,
         // but preserve LCD coverage if the Renderer uses that.
         rendererCoverage = Coverage::kSingleChannel;
     }
-    bool dstReadRequired = IsDstReadRequired(fRecorder->priv().caps(), blendMode, rendererCoverage);
+
+    TextureFormat targetFormat = TextureInfoPriv::ViewFormat(fDC->target()->textureInfo());
+    bool dstReadRequired = !CanUseHardwareBlending(fRecorder->priv().caps(),
+                                                   targetFormat,
+                                                   blendMode,
+                                                   rendererCoverage);
 
     // A primitive blender should be ignored if there is no primitive color to blend against.
     // Additionally, if a renderer emits a primitive color, then a null primitive blender should
@@ -1349,7 +1378,8 @@ void Device::drawGeometry(const Transform& localToDevice,
                               (secondaryRenderer && secondaryRenderer->requiresMSAA());
     DstReadStrategy dstReadStrategy = dstReadRequired ? fDC->dstReadStrategy(requiresMSAA)
                                                       : DstReadStrategy::kNoneRequired;
-    const bool needsFlush = this->needsFlushBeforeDraw(numNewRenderSteps, dstReadStrategy);
+    const bool needsFlush =
+            this->needsFlushBeforeDraw(numNewRenderSteps, dstReadStrategy, requiresMSAA);
     if (needsFlush) {
         if (pathAtlas != nullptr) {
             // We need to flush work for all devices associated with the current Recorder.
@@ -1364,7 +1394,13 @@ void Device::drawGeometry(const Transform& localToDevice,
     // it to be drawn.
     std::optional<PathAtlas::MaskAndOrigin> atlasMask;  // only used if `pathAtlas != nullptr`
     if (pathAtlas != nullptr) {
-        std::tie(renderer, atlasMask) = pathAtlas->addShape(clip.transformedShapeBounds(),
+        Rect clippedShapeBounds = clip.transformedShapeBounds().makeIntersect(clip.scissor());
+        if (clippedShapeBounds.area() >= 0.8f * clip.transformedShapeBounds().area()) {
+            // The clip isn't excluding very much of the original shape, so store the entire path
+            // in the atlas to avoid redundant entries with slightly different clips.
+            clippedShapeBounds = clip.transformedShapeBounds();
+        }
+        std::tie(renderer, atlasMask) = pathAtlas->addShape(clippedShapeBounds,
                                                             geometry.shape(),
                                                             localToDevice,
                                                             style);
@@ -1378,7 +1414,7 @@ void Device::drawGeometry(const Transform& localToDevice,
             fRecorder->priv().flushTrackedDevices();
 
             // Try inserting the shape again.
-            std::tie(renderer, atlasMask) = pathAtlas->addShape(clip.transformedShapeBounds(),
+            std::tie(renderer, atlasMask) = pathAtlas->addShape(clippedShapeBounds,
                                                                 geometry.shape(),
                                                                 localToDevice,
                                                                 style);
@@ -1502,6 +1538,7 @@ void Device::drawClipShape(const Transform& localToDevice,
     auto [renderer, pathAtlas] = this->chooseRenderer(localToDevice,
                                                       geometry,
                                                       DefaultFillStyle(),
+                                                      clip.drawBounds(),
                                                       /*requireMSAA=*/true);
     if (!renderer) {
         SKGPU_LOG_W("Skipping clip with no supported path renderer.");
@@ -1543,6 +1580,7 @@ void Device::drawClipShape(const Transform& localToDevice,
 std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& localToDevice,
                                                               const Geometry& geometry,
                                                               const SkStrokeRec& style,
+                                                              const Rect& drawBounds,
                                                               bool requireMSAA) const {
     const RendererProvider* renderers = fRecorder->priv().rendererProvider();
     SkASSERT(renderers);
@@ -1571,10 +1609,15 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         SkASSERT(!requireMSAA && style.isFillStyle());
         // handled by specialized system, simplified from rects and round rects
         const EdgeAAQuad& quad = geometry.edgeAAQuad();
-        if (quad.isRect() && quad.edgeFlags() == EdgeAAQuad::Flags::kNone) {
+        if (quad.isRect() && (quad.edgeFlags() == EdgeAAQuad::Flags::kNone
+#if !defined(SK_SKIP_PIXELALIGNED_QUAD_CHECK_GRAPHITE)
+                              || is_pixel_aligned(quad.bounds(), localToDevice)
+#endif
+                             )) {
             // For non-AA rectangular quads, it can always use a coverage-less renderer; there's no
             // need to check for pixel alignment to avoid popping if MSAA is turned on because quad
-            // tile edges will seam with each in either mode.
+            // tile edges will seam with each in either mode. We also switch to use the cover bounds
+            // when the quad is pixel aligned to be consistent with drawRect Renderer handling.
             return {renderers->nonAABounds(), nullptr};
         } else {
             return {renderers->perEdgeAAQuad(), nullptr};
@@ -1592,10 +1635,8 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         // For pixel-aligned rects, use the the non-AA bounds renderer to avoid triggering any
         // dst-read requirement due to src blending.
         bool pixelAlignedRect = false;
-        if (shape.isRect() && style.isFillStyle() &&
-            localToDevice.type() <= Transform::Type::kRectStaysRect) {
-            Rect devRect = localToDevice.mapRect(shape.rect());
-            pixelAlignedRect = devRect.nearlyEquals(devRect.makeRound());
+        if (shape.isRect() && style.isFillStyle()) {
+            pixelAlignedRect = is_pixel_aligned(shape.rect(), localToDevice);
         }
 
         if (shape.isEmpty() || pixelAlignedRect) {
@@ -1655,19 +1696,13 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
     // Prefer compute atlas draws if supported. This currently implicitly filters out clip draws as
     // they require MSAA. Eventually we may want to route clip shapes to the atlas as well but not
     // if hardware MSAA is required.
-    std::optional<Rect> drawBounds;
     if (atlasProvider->isAvailable(AtlasProvider::PathAtlasFlags::kCompute) &&
         use_compute_atlas_when_available(strategy)) {
         PathAtlas* atlas = fDC->getComputePathAtlas(fRecorder);
         SkASSERT(atlas);
 
         // Don't use the compute renderer if it can't handle the shape efficiently.
-        //
-        // Use the conservative clip bounds for a rough estimate of the mask size (this avoids
-        // having to evaluate the entire clip stack before choosing the renderer as it will have to
-        // get evaluated again if we fall back to a different renderer).
-        drawBounds = localToDevice.mapRect(shape.bounds());
-        if (atlas->isSuitableForAtlasing(*drawBounds, fClip.conservativeBounds())) {
+        if (atlas->isSuitableForAtlasing(drawBounds, fClip.conservativeBounds())) {
             pathAtlas = atlas;
         }
     }
@@ -1716,20 +1751,11 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         // would be pretty trivial to spin up.
         return {renderers->convexTessellatedWedges(), nullptr};
     } else {
-        if (!drawBounds.has_value()) {
-            drawBounds = localToDevice.mapRect(shape.bounds());
-        }
-        drawBounds->intersect(fClip.conservativeBounds());
         const bool preferWedges =
-                // If the draw bounds don't intersect with the clip stack's conservative bounds,
-                // we'll be drawing a very small area at most, accounting for coverage, so just
-                // stick with drawing wedges in that case.
-                drawBounds->isEmptyNegativeOrNaN() ||
-
                 // TODO: Combine this heuristic with what is used in PathStencilCoverOp to choose
                 // between wedges curves consistently in Graphite and Ganesh.
                 (shape.isPath() && shape.path().countVerbs() < 50) ||
-                drawBounds->area() <= (256 * 256);
+                drawBounds.area() <= (256 * 256);
 
         if (preferWedges) {
             return {renderers->stencilTessellatedWedges(shape.fillType()), nullptr};
@@ -1803,6 +1829,10 @@ void Device::flushPendingWorkToRecorder() {
         }
     }
 
+    // Upon flushing, reset the last recorded dst read strategy. We do not want a dst read
+    // performed in a prior draw pass to impact draws in a fresh pass.
+    fPriorDrawDstReadStrategy = DstReadStrategy::kNoneRequired;
+
     fIsFlushing = false;
 }
 
@@ -1828,13 +1858,34 @@ void Device::internalFlush() {
     fRecorder->priv().atlasProvider()->compact();
 }
 
-bool Device::needsFlushBeforeDraw(int numNewRenderSteps, DstReadStrategy dstReadStrategy) const {
+bool Device::needsFlushBeforeDraw(int numNewRenderSteps,
+                                  DstReadStrategy dstReadStrategy,
+                                  bool requiresMSAA) {
     // Must also account for the elements in the clip stack that might need to be recorded.
     numNewRenderSteps += fClip.maxDeferredClipDraws() * Renderer::kMaxRenderSteps;
-    return // Need flush if we don't have room to record into the current list.
+    bool needsFlush =
+           // Need flush if we don't have room to record into the current list.
            (DrawList::kMaxRenderSteps - fDC->pendingRenderSteps()) < numNewRenderSteps ||
            // Need flush if this draw needs to copy the dst surface for reading.
-           dstReadStrategy == DstReadStrategy::kTextureCopy;
+           dstReadStrategy == DstReadStrategy::kTextureCopy ||
+           // Need flush if we were performing a dst copy but now can read as an input
+           // attachment (we must perform the copy operation prior to reading).
+           (fPriorDrawDstReadStrategy == DstReadStrategy::kTextureCopy &&
+            dstReadStrategy == DstReadStrategy::kReadFromInput) ||
+           // Need flush if going from reading the dst as an input attachment to a draw that
+           // requires MSAA (we must ensure the loading of the MSAA attachment from resolve
+           // occurs after any prior draw operations).
+           (fPriorDrawDstReadStrategy == DstReadStrategy::kReadFromInput && requiresMSAA);
+
+    // After making this determination, update the last recorded DstReadStrategy. Only update if
+    // a dst read is actually performed (i.e. the strategy used for this draw is not kNoneRequired).
+    // This is because we must maintain a record of the last strategy used to actually perform a dst
+    // read (even if this draw does not perform one) as that informs whether a flush is needed.
+    if (dstReadStrategy != DstReadStrategy::kNoneRequired) {
+        fPriorDrawDstReadStrategy = dstReadStrategy;
+    }
+
+    return needsFlush;
 }
 
 void Device::drawSpecial(SkSpecialImage* special,

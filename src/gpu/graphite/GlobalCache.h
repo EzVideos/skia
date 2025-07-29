@@ -54,6 +54,11 @@ public:
     // Otherwise, the passed-in pipeline is held by the GlobalCache and also returned back.
     sk_sp<GraphicsPipeline> addGraphicsPipeline(const UniqueKey&,
                                                 sk_sp<GraphicsPipeline>) SK_EXCLUDES(fSpinLock);
+    // Remove the GraphicsPipeline from the cache, if possible. This does nothing if the pipeline
+    // is not held in the cache. This removes based on actual pipeline object, not by key. When
+    // pipeline compilation has transient failures, it is possible for multiple GraphicsPipelines to
+    // be created that have the same key.
+    void removeGraphicsPipeline(const GraphicsPipeline*) SK_EXCLUDES(fSpinLock);
 
     void purgePipelinesNotUsedSince(
             StdSteadyClock::time_point purgeTime) SK_EXCLUDES(fSpinLock);
@@ -109,6 +114,19 @@ public:
     void invokePipelineCallback(SharedContext*,
                                 const GraphicsPipelineDesc&,
                                 const RenderPassDesc&);
+
+#if defined(GPU_TEST_UTILS)
+    struct StaticVertexCopyRanges {
+        uint32_t fOffset;
+        size_t fUnalignedSize;
+        size_t fSize;
+        size_t fRequiredAlignment;
+    };
+    void testingOnly_SetStaticVertexInfo(skia_private::TArray<StaticVertexCopyRanges>,
+                                         const Buffer*) SK_EXCLUDES(fSpinLock);
+    SkSpan<const StaticVertexCopyRanges> getStaticVertexCopyRanges() const SK_EXCLUDES(fSpinLock);
+    sk_sp<Buffer> getStaticVertexBuffer() SK_EXCLUDES(fSpinLock);
+#endif
 private:
     struct KeyHash {
         uint32_t operator()(const UniqueKey& key) const { return key.hash(); }
@@ -144,6 +162,11 @@ private:
     // Every Pipeline will be marked with the epoch in which it was created and then updated
     // for each epoch in which it was used.
     uint16_t fEpochCounter SK_GUARDED_BY(fSpinLock) = 1;
+
+#if defined(GPU_TEST_UTILS)
+    skia_private::TArray<StaticVertexCopyRanges> fStaticVertexInfo SK_GUARDED_BY(fSpinLock);
+    const Buffer* fStaticVertexBuffer SK_GUARDED_BY(fSpinLock);
+#endif
 };
 
 }  // namespace skgpu::graphite

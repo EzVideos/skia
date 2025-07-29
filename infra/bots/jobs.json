@@ -12,6 +12,7 @@
     "cq_config": {}
   },
   {"name": "BazelBuild-dm-release-linux_x64"},
+  {"name": "BazelBuild-fontations-release-linux_x64"},
   {
     "name": "BazelBuild-full_library-enforce_iwyu-linux_x64",
     "cq_config": {}
@@ -113,8 +114,6 @@
     }
   },
   {"name": "Build-Mac-Clang-arm64-Debug-iOS_Metal"},
-  {"name": "Build-Mac-Clang-arm64-Debug-iOS_iOS12"},
-  {"name": "Build-Mac-Clang-arm64-Debug-iOS_iOS12_Metal"},
   {"name": "Build-Mac-Clang-arm64-Release"},
   {"name": "Build-Mac-Clang-arm64-Release-ANGLE"},
   {"name": "Build-Mac-Clang-arm64-Release-Graphite_Dawn_Metal"},
@@ -149,8 +148,6 @@
     "name": "Build-Mac-Clang-arm64-Release-iOS_Metal",
     "cq_config": {}
   },
-  {"name": "Build-Mac-Clang-arm64-Release-iOS_iOS12"},
-  {"name": "Build-Mac-Clang-arm64-Release-iOS_iOS12_Metal"},
   {"name": "Build-Mac-Clang-x64-Release-iOS"},
   {"name": "Build-Mac-Clang-x86_64-Debug"},
   {"name": "Build-Mac-Clang-x86_64-Debug-ANGLE"},
@@ -496,7 +493,6 @@
   {"name": "Perf-Android-Clang-GalaxyS24-GPU-Adreno750-arm64-Release-All-Android"},
   {"name": "Perf-Android-Clang-GalaxyS24-GPU-Adreno750-arm64-Release-All-Android_Vulkan"},
   {"name": "Perf-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Release-All-Android"},
-  {"name": "Perf-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Release-All-Android_Vulkan"},
   {"name": "Perf-Android-Clang-GalaxyS9-GPU-MaliG72-arm64-Release-All-Android"},
   {"name": "Perf-Android-Clang-GalaxyS9-GPU-MaliG72-arm64-Release-All-Android_Vulkan"},
   {"name": "Perf-Android-Clang-JioNext-CPU-SnapdragonQM215-arm-Release-All-Android"},
@@ -544,7 +540,7 @@
   {"name": "Perf-ChromeOS-Clang-Octopus-GPU-IntelUHDGraphics600-x86_64-Release-All"},
   {"name": "Perf-ChromeOS-Clang-Trogdor-GPU-Adreno618-arm64-Release-All"},
   {
-    "name": "Perf-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Graphite_Native_Metal",
+    "name": "Perf-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Graphite_Native_Metal",
     "cq_config": {
       "location_regexes": [
         "(tests|src/gpu)/graphite/.*",
@@ -552,7 +548,7 @@
       ]
     }
   },
-  {"name": "Perf-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal"},
+  {"name": "Perf-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal"},
   {"name": "Perf-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All"},
   {"name": "Perf-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All-Graphite_Native_Metal"},
   {"name": "Perf-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All-Metal"},
@@ -631,7 +627,6 @@
   {"name": "Perf-Win11-Clang-NUC6i5SYK-GPU-IntelIris540-x86_64-Release-All-Vulkan"},
   {"name": "Perf-Win11-Clang-NUC9i7QN-GPU-RTX3060-x86_64-Release-All"},
   {"name": "Perf-Win11-Clang-NUC9i7QN-GPU-RTX3060-x86_64-Release-All-Vulkan"},
-  {"name": "Perf-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Release-All"},
   {"name": "Perf-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Release-All-ANGLE"},
   {"name": "Perf-Win11-Clang-ThinkCenter-GPU-RadeonVega8-x86_64-Release-All-Vulkan"},
   {"name": "Perf-iOS-Clang-iPadPro-GPU-PowerVRGT7800-arm64-Release-All"},
@@ -640,8 +635,6 @@
   {"name": "Perf-iOS-Clang-iPhone7-GPU-PowerVRGT7600-arm64-Release-All-Metal"},
   {"name": "Perf-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All"},
   {"name": "Perf-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-Metal"},
-  {"name": "Perf-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-iOS12"},
-  {"name": "Perf-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-iOS12_Metal"},
   {"name": "Perf-iOS18-Clang-iPhone11-GPU-AppleA13-arm64-Release-All"},
   {"name": "Perf-iOS18-Clang-iPhone11-GPU-AppleA13-arm64-Release-All-Metal"},
   {"name": "Perf-iOS18-Clang-iPhone15Pro-GPU-AppleA17-arm64-Release-All"},
@@ -661,9 +654,7 @@
   {"name": "Test-Android-Clang-GalaxyS24-GPU-Adreno750-arm64-Release-All-Android"},
   {"name": "Test-Android-Clang-GalaxyS24-GPU-Adreno750-arm64-Release-All-Android_Vulkan"},
   {"name": "Test-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Debug-All-Android"},
-  {"name": "Test-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Debug-All-Android_Vulkan"},
   {"name": "Test-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Release-All-Android"},
-  {"name": "Test-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Release-All-Android_Vulkan"},
   {"name": "Test-Android-Clang-GalaxyS9-GPU-MaliG72-arm64-Debug-All-Android"},
   {"name": "Test-Android-Clang-GalaxyS9-GPU-MaliG72-arm64-Debug-All-Android_Protected"},
   {"name": "Test-Android-Clang-GalaxyS9-GPU-MaliG72-arm64-Debug-All-Android_Vulkan"},
@@ -741,7 +732,7 @@
   {"name": "Test-ChromeOS-Clang-Trogdor-GPU-Adreno618-arm64-Debug-All"},
   {"name": "Test-ChromeOS-Clang-Trogdor-GPU-Adreno618-arm64-Release-All"},
   {
-    "name": "Test-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Graphite_Native_Metal",
+    "name": "Test-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Graphite_Native_Metal",
     "cq_config": {
       "location_regexes": [
         "(tests|src/gpu)/graphite/.*",
@@ -751,11 +742,10 @@
       ]
     }
   },
-  {"name": "Test-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Metal"},
-  {"name": "Test-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Metal_ColorSpaces"},
-  {"name": "Test-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal"},
-  {"name": "Test-Mac10.15.7-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal_ColorSpaces"},
-  {"name": "Test-Mac10.15.7-Clang-VMware7.1-CPU-AVX-x86_64-Debug-All-NativeFonts"},
+  {"name": "Test-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Metal"},
+  {"name": "Test-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Debug-All-Metal_ColorSpaces"},
+  {"name": "Test-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal"},
+  {"name": "Test-Mac11-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-Metal_ColorSpaces"},
   {"name": "Test-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All"},
   {"name": "Test-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All-ANGLE"},
   {"name": "Test-Mac13-Clang-MacBookPro15.3-GPU-AppleM3-arm64-Debug-All-Graphite_Native_Metal"},
@@ -1035,9 +1025,7 @@
   {"name": "Test-Win11-Clang-NUC9i7QN-GPU-RTX3060-x86_64-Debug-All-Vulkan"},
   {"name": "Test-Win11-Clang-NUC9i7QN-GPU-RTX3060-x86_64-Release-All"},
   {"name": "Test-Win11-Clang-NUC9i7QN-GPU-RTX3060-x86_64-Release-All-Vulkan"},
-  {"name": "Test-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Debug-All"},
   {"name": "Test-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Debug-All-ANGLE"},
-  {"name": "Test-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Release-All"},
   {"name": "Test-Win11-Clang-NUCD34010WYKH-GPU-IntelHD4400-x86_64-Release-All-ANGLE"},
   {"name": "Test-Win11-Clang-ThinkCenter-GPU-RadeonVega8-x86_64-Debug-All-Vulkan"},
   {"name": "Test-Win11-Clang-ThinkCenter-GPU-RadeonVega8-x86_64-Release-All-Vulkan"},
@@ -1055,12 +1043,8 @@
   {"name": "Test-iOS-Clang-iPhone7-GPU-PowerVRGT7600-arm64-Release-All-Metal"},
   {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Debug-All"},
   {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Debug-All-Metal"},
-  {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Debug-All-iOS12"},
-  {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Debug-All-iOS12_Metal"},
   {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All"},
   {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-Metal"},
-  {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-iOS12"},
-  {"name": "Test-iOS-Clang-iPhone8-GPU-AppleA11-arm64-Release-All-iOS12_Metal"},
   {"name": "Test-iOS18-Clang-iPhone11-GPU-AppleA13-arm64-Debug-All"},
   {"name": "Test-iOS18-Clang-iPhone11-GPU-AppleA13-arm64-Debug-All-Metal"},
   {"name": "Test-iOS18-Clang-iPhone11-GPU-AppleA13-arm64-Release-All"},

@@ -45,16 +45,13 @@ std::unique_ptr<Context> MakeVulkan(const VulkanBackendContext& backendContext,
 namespace skgpu::graphite {
 
 VkShaderModule CreateVulkanShaderModule(const VulkanSharedContext* context,
-                                        const std::string& spirv,
+                                        const SkSL::NativeShader& spirv,
                                         VkShaderStageFlagBits stage) {
     TRACE_EVENT0("skia.shaders", "InstallVkShaderModule");
-    VkShaderModuleCreateInfo moduleCreateInfo;
-    memset(&moduleCreateInfo, 0, sizeof(VkShaderModuleCreateInfo));
+    VkShaderModuleCreateInfo moduleCreateInfo = {};
     moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    moduleCreateInfo.pNext = nullptr;
-    moduleCreateInfo.flags = 0;
-    moduleCreateInfo.codeSize = spirv.size();
-    moduleCreateInfo.pCode = (const uint32_t*)spirv.c_str();
+    moduleCreateInfo.codeSize = spirv.fBinary.size() * sizeof(uint32_t);
+    moduleCreateInfo.pCode = spirv.fBinary.data();
 
     VkShaderModule shaderModule;
     VkResult result;
@@ -81,7 +78,7 @@ void DescriptorDataToVkDescSetLayout(const VulkanSharedContext* ctxt,
         if (requestedDescriptors[i].fCount != 0) {
             const DescriptorData& currDescriptor = requestedDescriptors[i];
             VkDescriptorSetLayoutBinding& layoutBinding = bindingLayouts.push_back();
-            memset(&layoutBinding, 0, sizeof(VkDescriptorSetLayoutBinding));
+            layoutBinding = {};
             layoutBinding.binding = currDescriptor.fBindingIndex;
             layoutBinding.descriptorType = DsTypeEnumToVkDs(currDescriptor.fType);
             layoutBinding.descriptorCount = currDescriptor.fCount;
@@ -94,11 +91,8 @@ void DescriptorDataToVkDescSetLayout(const VulkanSharedContext* ctxt,
         }
     }
 
-    VkDescriptorSetLayoutCreateInfo layoutCreateInfo;
-    memset(&layoutCreateInfo, 0, sizeof(VkDescriptorSetLayoutCreateInfo));
+    VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.pNext = nullptr;
-    layoutCreateInfo.flags = 0;
     layoutCreateInfo.bindingCount = bindingLayouts.size();
     layoutCreateInfo.pBindings = bindingLayouts.data();
 
@@ -219,6 +213,37 @@ VkShaderStageFlags PipelineStageFlagsToVkShaderStageFlags(
 bool RenderPassDescWillLoadMSAAFromResolve(const RenderPassDesc& renderPassDesc) {
     return renderPassDesc.fColorResolveAttachment.fFormat != TextureFormat::kUnsupported &&
            renderPassDesc.fColorResolveAttachment.fLoadOp == LoadOp::kLoad;
+}
+
+bool RenderPassDescWillImplicitlyLoadMSAA(const RenderPassDesc& renderPassDesc) {
+    // TODO: This is currently not possible, but will be with an upcoming change adding support for
+    // VK_EXT_multisampled_render_to_single_sampled. For now, simply return false.
+    SkASSERT(renderPassDesc.fColorAttachment.fFormat != TextureFormat::kUnsupported);
+    SkASSERT(renderPassDesc.fColorAttachment.fSampleCount > 1 ||
+             renderPassDesc.fColorResolveAttachment.fFormat == TextureFormat::kUnsupported);
+
+    return false;
+}
+
+RenderPassDesc MakePipelineCompatibleRenderPass(const RenderPassDesc& renderPassDesc) {
+    RenderPassDesc compatible = renderPassDesc;
+
+    // Reset all load/store ops on the attachments since those do not affect compatibility.
+    // Choose a combination that is most likely to be used later by the real render pass.
+    const bool hasResolve =
+            renderPassDesc.fColorResolveAttachment.fFormat != TextureFormat::kUnsupported;
+    const bool needLoadMSAAFromResolveSubpass =
+            RenderPassDescWillLoadMSAAFromResolve(renderPassDesc);
+    compatible.fColorAttachment.fLoadOp =
+            needLoadMSAAFromResolveSubpass ? LoadOp::kDiscard : LoadOp::kClear;
+    compatible.fColorAttachment.fStoreOp = hasResolve ? StoreOp::kDiscard : StoreOp::kStore;
+    compatible.fColorResolveAttachment.fLoadOp =
+            needLoadMSAAFromResolveSubpass ? LoadOp::kLoad : LoadOp::kDiscard;
+    compatible.fColorResolveAttachment.fStoreOp = hasResolve ? StoreOp::kStore : StoreOp::kDiscard;
+    compatible.fDepthStencilAttachment.fLoadOp = LoadOp::kClear;
+    compatible.fDepthStencilAttachment.fStoreOp = StoreOp::kDiscard;
+
+    return compatible;
 }
 
 } // namespace skgpu::graphite

@@ -190,6 +190,18 @@ gensrcs {
 }
 
 cc_library_static {
+    name: "libskia_skcms",
+    host_supported: true,
+    sdk_version: "current",
+    srcs: [
+        $skcms_srcs
+    ],
+    export_include_dirs: [
+        "modules/skcms",
+    ],
+}
+
+cc_library_static {
     name: "libskia",
     host_supported: true,
     cppflags:[
@@ -303,7 +315,6 @@ cc_defaults {
     name: "skia_deps",
     defaults: ["skia_renderengine_deps"],
     shared_libs: [
-        "libdng_sdk",
         "libjpeg",
         "libpiex",
         "libexpat",
@@ -325,16 +336,24 @@ cc_defaults {
     target: {
       android: {
         shared_libs: [
-            "libheif",
             "libmediandk", // Needed to link libcrabbyavif_ffi in some configurations.
+            "libdng_sdk",
         ],
         whole_static_libs: [
             "libcrabbyavif_ffi",
         ],
       },
+      host_linux: {
+        static_libs: [
+          "libdng_sdk",
+        ],
+      },
       darwin: {
         host_ldlibs: [
             "-framework AppKit",
+        ],
+        static_libs: [
+          "libdng_sdk",
         ],
       },
       windows: {
@@ -517,6 +536,8 @@ def generate_args(target_os, enable_gpu, renderengine = False):
     # files.
     'target_cpu':                           '"none"',
 
+    'skia_use_libheif':                     'false',
+
     # Use the custom FontMgr, as the framework will handle fonts.
     'skia_enable_fontmgr_custom_directory': 'false',
     'skia_enable_fontmgr_custom_embedded':  'false',
@@ -569,11 +590,9 @@ def generate_args(target_os, enable_gpu, renderengine = False):
     d['win_toolchain_version'] = '"placeholder_version"'
 
   if target_os == '"android"' and not renderengine:
-    d['skia_use_libheif']  = 'true'
     d['skia_use_crabbyavif'] = 'true'
     d['skia_use_jpeg_gainmaps'] = 'true'
   else:
-    d['skia_use_libheif']  = 'false'
     d['skia_use_crabbyavif'] = 'false'
 
   if renderengine:
@@ -630,6 +649,9 @@ nanobench_target = js['targets']['//:nanobench']
 nanobench_srcs     = strip_slashes(nanobench_target['sources'])
 nanobench_includes = strip_slashes(nanobench_target['include_dirs'])
 
+skcms_srcs = strip_slashes(js['targets']['//modules/skcms:skcms']['sources'])
+
+pathops_srcs = strip_slashes(js['targets']['//modules/pathops:pathops']['sources'])
 
 gn_to_bp_utils.GrabDependentValues(js, '//:gm', 'sources', gm_srcs, '//:skia')
 gn_to_bp_utils.GrabDependentValues(js, '//:tests', 'sources', test_srcs, '//:skia')
@@ -689,6 +711,12 @@ gm_srcs         = strip_non_srcs(gm_srcs)
 test_srcs       = strip_non_srcs(test_srcs)
 dm_srcs         = strip_non_srcs(dm_srcs).difference(gm_srcs).difference(test_srcs)
 nanobench_srcs  = strip_non_srcs(nanobench_srcs).difference(gm_srcs)
+skcms_srcs      = strip_non_srcs(skcms_srcs)
+pathops_srcs    = strip_non_srcs(pathops_srcs)
+
+# PathOps is no longer part of core Skia, but that is not
+# an interesting distinction for Android (yet).
+srcs = srcs.union(pathops_srcs)
 
 test_minus_gm_includes = test_includes.difference(gm_includes)
 test_minus_gm_srcs = test_srcs.difference(gm_srcs)
@@ -851,6 +879,8 @@ with open('Android.bp', 'w') as Android_bp:
 
     'nanobench_includes'    : bpfmt(8, nanobench_includes),
     'nanobench_srcs'        : bpfmt(8, nanobench_srcs),
+
+    'skcms_srcs': bpfmt(8, skcms_srcs),
 
     'skqp_sdk_version': skqp_sdk_version,
     'skqp_includes':    bpfmt(8, skqp_includes),

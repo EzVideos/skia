@@ -65,6 +65,12 @@ sk_sp<GraphicsPipeline> ResourceProvider::findOrCreateGraphicsPipeline(
     sk_sp<GraphicsPipeline> pipeline = globalCache->findGraphicsPipeline(pipelineKey,
                                                                          pipelineCreationFlags,
                                                                          &compilationID);
+    if (pipeline && pipeline->didAsyncCompilationFail()) {
+        // If the pipeline failed, remove it from the cache and fall through to retry
+        globalCache->removeGraphicsPipeline(pipeline.get());
+        pipeline.reset();
+    }
+
     if (!pipeline) {
         // Haven't encountered this pipeline, so create a new one. Since pipelines are shared
         // across Recorders, we could theoretically create equivalent pipelines on different
@@ -252,7 +258,7 @@ sk_sp<Buffer> ResourceProvider::findOrCreateBuffer(size_t size,
         static const int kKeyNum32DataCnt =  kSizeKeyNum32DataCnt + 1;
 
         SkASSERT(static_cast<uint32_t>(type) < (1u << 4));
-        SkASSERT(static_cast<uint32_t>(accessPattern) < (1u << 1));
+        SkASSERT(static_cast<uint32_t>(accessPattern) < (1u << 2));
 
         GraphiteResourceKey::Builder builder(&key, kType, kKeyNum32DataCnt);
         builder[0] = (static_cast<uint32_t>(type) << 0) |

@@ -9,6 +9,7 @@
 
 #include "include/core/SkPoint.h"
 #include "include/core/SkSize.h"
+#include "include/core/SkSpan.h"
 #include "include/gpu/graphite/Context.h"
 #include "include/gpu/graphite/TextureInfo.h"
 #include "include/private/base/SkAssert.h"
@@ -25,19 +26,38 @@
 #include "src/gpu/graphite/TextureFormat.h"
 #include "src/gpu/graphite/TextureProxy.h"
 
+#include <tuple>
 #include <utility>
 
 namespace skgpu::graphite {
 
+class GraphicsPipeline;
+
 namespace {
 
-SkISize get_msaa_size(const SkISize& targetSize, const Caps& caps) {
+// Get the required MSAA size for the render pass.
+// In some scenarios, the MSAA size can be smaller than the target texture. As long as it is big
+// enough to contain the draws' bounds.
+std::pair<SkISize, SkIPoint> get_msaa_size_and_resolve_offset(const SkISize& targetSize,
+                                                              const SkIRect& drawBounds,
+                                                              const Caps& caps,
+                                                              LoadOp loadOp) {
     if (caps.differentResolveAttachmentSizeSupport()) {
-        // Use approx size for better reuse.
-        return GetApproxSize(targetSize);
+        // If possible, use approx size that can fit all draws. This reduces the MSAA texture size
+        // and also reuses the textures better.
+        // Note: we don't do this if loadOp=Clear because it's supposed to update the whole target
+        // texture.
+        auto smallEnoughBounds = drawBounds;
+        if (loadOp != LoadOp::kClear && !smallEnoughBounds.isEmpty() &&
+            smallEnoughBounds.intersect(SkIRect::MakeSize(targetSize))) {
+            SkIPoint resolveOffset = smallEnoughBounds.topLeft();
+            return {GetApproxSize(smallEnoughBounds.size()), resolveOffset};
+        } else {
+            return {GetApproxSize(targetSize), {0, 0}};
+        }
     }
 
-    return targetSize;
+    return {targetSize, {0, 0}};
 }
 
 }  // anonymous namespace
@@ -155,23 +175,16 @@ Task::Status RenderPassTask::addCommands(Context* context,
     SkASSERT(fTarget && fTarget->isInstantiated());
     SkASSERT(!fDstCopy || fDstCopy->isInstantiated());
 
-    // Only apply the replay translation and clip if we're drawing to the final replay target.
-    const SkIRect renderTargetBounds = SkIRect::MakeSize(fTarget->dimensions());
-    if (fTarget->texture() == replayData.fTarget) {
-        // The clip set here will intersect with the render target bounds, and then any scissor set
-        // during this render pass. If there is no intersection between the clip and the render
-        // target bounds, we can skip this entire render pass.
-        if (!commandBuffer->setReplayTranslationAndClip(
-                    replayData.fTranslation, replayData.fClip, renderTargetBounds)) {
-            return Status::kSuccess;
-        }
+    // Assuming one draw pass per renderpasstask for now
+    SkASSERT(fDrawPasses.size() == 1);
+    const auto& drawBounds = fDrawPasses[0]->bounds();
 
-    } else {
-        // An empty clip is ignored, and will default to the render target bounds.
-        constexpr SkIVector kNoReplayTranslation = {0, 0};
-        constexpr SkIRect kNoReplayClip = SkIRect::MakeEmpty();
-        commandBuffer->setReplayTranslationAndClip(
-                kNoReplayTranslation, kNoReplayClip, renderTargetBounds);
+    // Only apply the replay translation and clip if we're drawing to the final replay target.
+    SkIVector replayTranslation = {0, 0};
+    SkIRect replayClip = SkIRect::MakeEmpty();
+    if (fTarget->texture() == replayData.fTarget) {
+        replayTranslation = replayData.fTranslation;
+        replayClip = replayData.fClip;
     }
 
     // We don't instantiate the MSAA or DS attachments in prepareResources because we want to use
@@ -179,6 +192,7 @@ Task::Status RenderPassTask::addCommands(Context* context,
     ResourceProvider* resourceProvider = context->priv().resourceProvider();
     sk_sp<Texture> colorAttachment;
     sk_sp<Texture> resolveAttachment;
+    SkIPoint resolveOffset = SkIPoint::Make(0, 0);
     if (fRenderPassDesc.fColorResolveAttachment.fFormat != TextureFormat::kUnsupported) {
         // We always make color msaa attachments shareable. Between any render pass we discard
         // the values of the MSAA texture. Thus it is safe to be used by multiple different render
@@ -187,7 +201,12 @@ Task::Status RenderPassTask::addCommands(Context* context,
         TextureInfo colorInfo = context->priv().caps()->getDefaultAttachmentTextureInfo(
                 fRenderPassDesc.fColorAttachment, fTarget->isProtected(), Discardable::kYes);
 
-        SkISize msaaSize = get_msaa_size(fTarget->dimensions(), *context->priv().caps());
+        SkISize msaaSize;
+        std::tie(msaaSize, resolveOffset) =
+                get_msaa_size_and_resolve_offset(fTarget->dimensions(),
+                                                 drawBounds.makeOffset(replayTranslation),
+                                                 *context->priv().caps(),
+                                                 fRenderPassDesc.fColorAttachment.fLoadOp);
         colorAttachment = resourceProvider->findOrCreateShareableTexture(
                 msaaSize, colorInfo, "DiscardableMSAAAttachment");
         if (!colorAttachment) {
@@ -217,6 +236,18 @@ Task::Status RenderPassTask::addCommands(Context* context,
         }
     }
 
+    // The clip set here will intersect with the render target bounds, and then any scissor set
+    // during this render pass. If there is no intersection between the clip and the render target
+    // bounds, we can skip this entire render pass.
+    // Note: if the MSAA texture is allocated smaller than the target texture, we need to apply an
+    // additional translation (-resolveOffset) so that the draws' bounds' top left corner
+    // will be at (0, 0) on the MSAA texture
+    const SkIRect renderTargetBounds = SkIRect::MakeSize(colorAttachment->dimensions());
+    if (!commandBuffer->setReplayTranslationAndClip(
+                replayTranslation - resolveOffset, replayClip, renderTargetBounds)) {
+        return Status::kSuccess;
+    }
+
     // TODO(b/313629288) we always pass in the render target's dimensions as the viewport here.
     // Using the dimensions of the logical device that we're drawing to could reduce flakiness in
     // rendering.
@@ -226,6 +257,7 @@ Task::Status RenderPassTask::addCommands(Context* context,
                                      std::move(depthStencilAttachment),
                                      fDstCopy ? fDstCopy->texture() : nullptr,
                                      fDstReadBounds,
+                                     resolveOffset,
                                      fTarget->dimensions(),
                                      fDrawPasses)) {
         return Status::kSuccess;
@@ -233,5 +265,18 @@ Task::Status RenderPassTask::addCommands(Context* context,
         return Status::kFail;
     }
 }
+
+bool RenderPassTask::visitPipelines(const std::function<bool(const GraphicsPipeline*)>& visitor) {
+    for (const std::unique_ptr<DrawPass>& pass : fDrawPasses) {
+        for (const sk_sp<GraphicsPipeline>& pipeline : pass->pipelines()) {
+            if (!visitor(pipeline.get())) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 
 } // namespace skgpu::graphite

@@ -219,13 +219,14 @@ bool DawnCommandBuffer::onAddRenderPass(const RenderPassDesc& renderPassDesc,
                                         const Texture* colorTexture,
                                         const Texture* resolveTexture,
                                         const Texture* depthStencilTexture,
+                                        SkIPoint resolveOffset,
                                         SkIRect viewport,
                                         const DrawPassList& drawPasses) {
-    // `viewport` has already been translated by the replay translation by the base CommandBuffer.
+    // `viewport` has already been translated by the replay translation by the base CommandBuffer
     if (!SkIRect::Intersects(viewport, fRenderPassBounds)) SK_UNLIKELY {
-        // The entire pass is offscreen
-        return true;
-    }
+            // The entire pass is offscreen
+            return true;
+        }
 
     // Update the intrinsic constant buffer before starting a render pass.
     if (!this->updateIntrinsicUniforms(viewport)) SK_UNLIKELY {
@@ -233,6 +234,7 @@ bool DawnCommandBuffer::onAddRenderPass(const RenderPassDesc& renderPassDesc,
     }
 
     if (!this->beginRenderPass(renderPassDesc,
+                               resolveOffset,
                                renderPassBounds,
                                colorTexture,
                                resolveTexture,
@@ -275,6 +277,7 @@ bool DawnCommandBuffer::onAddComputePass(DispatchGroupSpan groups) {
 }
 
 bool DawnCommandBuffer::beginRenderPass(const RenderPassDesc& renderPassDesc,
+                                        const SkIPoint& resolveOffset,
                                         SkIRect renderPassBounds,
                                         const Texture* colorTexture,
                                         const Texture* resolveTexture,
@@ -369,7 +372,8 @@ bool DawnCommandBuffer::beginRenderPass(const RenderPassDesc& renderPassDesc,
             // But it also means we might have to load the resolve texture into the MSAA color attachment
 
             if (fSharedContext->dawnCaps()->emulateLoadStoreResolve()) {
-                // TODO(b/399640773): Remove this once Dawn natively supports the feature.
+                // TODO(b/399640773): Remove this once Dawn natively supports the partial resolve
+                // feature with different resolve & color offsets.
                 emulateLoadStoreResolveTexture = true;
             } else if (resolveInfo.fLoadOp == LoadOp::kLoad) {
                 std::optional<wgpu::LoadOp> resolveLoadOp =
@@ -378,6 +382,7 @@ bool DawnCommandBuffer::beginRenderPass(const RenderPassDesc& renderPassDesc,
                     wgpuColorAttachment.loadOp = *resolveLoadOp;
 #if !defined(__EMSCRIPTEN__)
                     if (fSharedContext->dawnCaps()->supportsPartialLoadResolve()) {
+                        SkASSERT(resolveOffset.isZero());
                         wgpuPartialRect.x = renderPassBounds.x();
                         wgpuPartialRect.y = renderPassBounds.y();
                         wgpuPartialRect.width = renderPassBounds.width();
@@ -443,6 +448,7 @@ bool DawnCommandBuffer::beginRenderPass(const RenderPassDesc& renderPassDesc,
         if (!this->emulateLoadMSAAFromResolveAndBeginRenderPassEncoder(
                     renderPassDesc,
                     wgpuRenderPass,
+                    resolveOffset,
                     renderPassBounds,
                     static_cast<const DawnTexture*>(colorTexture),
                     static_cast<const DawnTexture*>(resolveTexture))) {
@@ -459,6 +465,7 @@ bool DawnCommandBuffer::beginRenderPass(const RenderPassDesc& renderPassDesc,
 bool DawnCommandBuffer::emulateLoadMSAAFromResolveAndBeginRenderPassEncoder(
         const RenderPassDesc& intendedRenderPassDesc,
         const wgpu::RenderPassDescriptor& intendedDawnRenderPassDesc,
+        const SkIPoint& resolveOffset,
         const SkIRect& renderPassBounds,
         const DawnTexture* msaaTexture,
         const DawnTexture* resolveTexture) {
@@ -493,8 +500,10 @@ bool DawnCommandBuffer::emulateLoadMSAAFromResolveAndBeginRenderPassEncoder(
 
     auto renderPassEncoder = fCommandEncoder.BeginRenderPass(&dawnRenderPassDescWithoutResolve);
 
+    SkIRect msaaArea = renderPassBounds;
+    msaaArea.intersect(SkIRect::MakeSize(msaaTexture->dimensions()));
     SkIRect resolveArea = renderPassBounds;
-    resolveArea.intersect(SkIRect::MakeSize(msaaTexture->dimensions()));
+    resolveArea.offset(resolveOffset);
     resolveArea.intersect(SkIRect::MakeSize(resolveTexture->dimensions()));
 
     if (loadResolve) {
@@ -503,7 +512,8 @@ bool DawnCommandBuffer::emulateLoadMSAAFromResolveAndBeginRenderPassEncoder(
                                   renderPassWithoutResolveDesc,
                                   /*srcTextureView=*/resolveTexture->renderTextureView(),
                                   /*srcSampleCount=*/1,
-                                  resolveArea)) {
+                                  /*srcOffset=*/resolveArea.topLeft(),
+                                  /*dstBounds=*/msaaArea)) {
             renderPassEncoder.End();
             return false;
         }
@@ -511,7 +521,7 @@ bool DawnCommandBuffer::emulateLoadMSAAFromResolveAndBeginRenderPassEncoder(
 
     fActiveRenderPassEncoder = renderPassEncoder;
 
-    fResolveStepEmulationInfo = {msaaTexture, resolveTexture, resolveArea};
+    fResolveStepEmulationInfo = {msaaTexture, resolveTexture, msaaArea.topLeft(), resolveArea};
 
     return true;
 }
@@ -520,41 +530,19 @@ bool DawnCommandBuffer::doBlitWithDraw(const wgpu::RenderPassEncoder& renderEnco
                                        const RenderPassDesc& frontendRenderPassDescKey,
                                        const wgpu::TextureView& srcTextureView,
                                        int srcSampleCount,
-                                       const SkIRect& bounds) {
-    auto blitPipeline = fResourceProvider->findOrCreateBlitWithDrawPipeline(
-            frontendRenderPassDescKey, srcSampleCount);
-    if (!blitPipeline) {
+                                       const SkIPoint& srcOffset,
+                                       const SkIRect& dstBounds) {
+    DawnResourceProvider::BlitWithDrawEncoder blit =
+            fResourceProvider->findOrCreateBlitWithDrawEncoder(frontendRenderPassDescKey,
+                                                               srcSampleCount);
+    if (!blit) {
         SKGPU_LOG_E("Unable to create pipeline to blit with draw");
         return false;
     }
 
     SkASSERT(renderEncoder);
 
-    renderEncoder.SetPipeline(blitPipeline);
-
-    // The blit pipeline takes no uniforms, no vertex/instance attributes and only uses
-    // one texture that does not require a sampler.
-
-    // TODO: b/260368758
-    // cache single texture's bind group creation.
-    wgpu::BindGroupEntry entry;
-    entry.binding = 0;
-    entry.textureView = srcTextureView;
-
-    wgpu::BindGroupDescriptor desc;
-    desc.layout = blitPipeline.GetBindGroupLayout(0);
-    desc.entryCount = 1;
-    desc.entries = &entry;
-
-    auto bindGroup = fSharedContext->device().CreateBindGroup(&desc);
-
-    renderEncoder.SetBindGroup(0, bindGroup);
-
-    renderEncoder.SetScissorRect(bounds.x(), bounds.y(), bounds.width(), bounds.height());
-    renderEncoder.SetViewport(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0, 1);
-
-    // Fullscreen triangle
-    renderEncoder.Draw(3);
+    blit.EncodeBlit(fSharedContext->device(), renderEncoder, srcTextureView, srcOffset, dstBounds);
 
     return true;
 }
@@ -594,7 +582,8 @@ bool DawnCommandBuffer::endRenderPass() {
             intermediateRenderPassDesc,
             /*srcTextureView=*/fResolveStepEmulationInfo->fMSAATexture->renderTextureView(),
             /*srcSampleCount=*/fResolveStepEmulationInfo->fMSAATexture->textureInfo().numSamples(),
-            fResolveStepEmulationInfo->fResolveArea);
+            /*srcOffset=*/fResolveStepEmulationInfo->fMSAAAOffset,
+            /*dstBounds=*/fResolveStepEmulationInfo->fResolveArea);
 
     renderPassEncoder.End();
 
@@ -623,10 +612,28 @@ bool DawnCommandBuffer::addDrawPass(const DrawPass* drawPass) {
                 this->bindUniformBuffer(bub->fInfo, bub->fSlot);
                 break;
             }
-            case DrawPassCommands::Type::kBindDrawBuffers: {
-                auto bdb = static_cast<DrawPassCommands::BindDrawBuffers*>(cmdPtr);
-                this->bindDrawBuffers(
-                        bdb->fVertices, bdb->fInstances, bdb->fIndices, bdb->fIndirect);
+            case DrawPassCommands::Type::kBindStaticDataBuffer: {
+                auto bdb = static_cast<DrawPassCommands::BindStaticDataBuffer*>(cmdPtr);
+                this->bindInputBuffer(bdb->fStaticData.fBuffer, bdb->fStaticData.fOffset,
+                                      DawnGraphicsPipeline::kStaticDataBufferIndex);
+                break;
+            }
+            case DrawPassCommands::Type::kBindAppendDataBuffer: {
+                auto bdb = static_cast<DrawPassCommands::BindAppendDataBuffer*>(cmdPtr);
+                this->bindInputBuffer(bdb->fAppendData.fBuffer, bdb->fAppendData.fOffset,
+                                      DawnGraphicsPipeline::kAppendDataBufferIndex);
+                break;
+            }
+            case DrawPassCommands::Type::kBindIndexBuffer: {
+                auto bdb = static_cast<DrawPassCommands::BindIndexBuffer*>(cmdPtr);
+                this->bindIndexBuffer(
+                        bdb->fIndices.fBuffer, bdb->fIndices.fOffset);
+                break;
+            }
+            case DrawPassCommands::Type::kBindIndirectBuffer: {
+                auto bdb = static_cast<DrawPassCommands::BindIndirectBuffer*>(cmdPtr);
+                this->bindIndirectBuffer(
+                        bdb->fIndirect.fBuffer, bdb->fIndirect.fOffset);
                 break;
             }
             case DrawPassCommands::Type::kBindTexturesAndSamplers: {
@@ -743,30 +750,28 @@ void DawnCommandBuffer::bindUniformBuffer(const BindBufferInfo& info, UniformSlo
     fBoundUniformBuffersDirty = true;
 }
 
-void DawnCommandBuffer::bindDrawBuffers(const BindBufferInfo& vertices,
-                                        const BindBufferInfo& instances,
-                                        const BindBufferInfo& indices,
-                                        const BindBufferInfo& indirect) {
+void DawnCommandBuffer::bindInputBuffer(const Buffer* buffer, size_t offset,
+                                        uint32_t bindingIndex) {
     SkASSERT(fActiveRenderPassEncoder);
+    if (buffer) {
+        auto dawnBuffer = static_cast<const DawnBuffer*>(buffer)->dawnBuffer();
+        fActiveRenderPassEncoder.SetVertexBuffer(bindingIndex, dawnBuffer, offset);
+    }
+}
 
-    if (vertices.fBuffer) {
-        auto dawnBuffer = static_cast<const DawnBuffer*>(vertices.fBuffer)->dawnBuffer();
-        fActiveRenderPassEncoder.SetVertexBuffer(
-                DawnGraphicsPipeline::kVertexBufferIndex, dawnBuffer, vertices.fOffset);
-    }
-    if (instances.fBuffer) {
-        auto dawnBuffer = static_cast<const DawnBuffer*>(instances.fBuffer)->dawnBuffer();
-        fActiveRenderPassEncoder.SetVertexBuffer(
-                DawnGraphicsPipeline::kInstanceBufferIndex, dawnBuffer, instances.fOffset);
-    }
-    if (indices.fBuffer) {
-        auto dawnBuffer = static_cast<const DawnBuffer*>(indices.fBuffer)->dawnBuffer();
+void DawnCommandBuffer::bindIndexBuffer(const Buffer* indexBuffer, size_t offset) {
+    SkASSERT(fActiveRenderPassEncoder);
+    if (indexBuffer) {
+        auto dawnBuffer = static_cast<const DawnBuffer*>(indexBuffer)->dawnBuffer();
         fActiveRenderPassEncoder.SetIndexBuffer(
-                dawnBuffer, wgpu::IndexFormat::Uint16, indices.fOffset);
+                dawnBuffer, wgpu::IndexFormat::Uint16, offset);
     }
-    if (indirect.fBuffer) {
-        fCurrentIndirectBuffer = static_cast<const DawnBuffer*>(indirect.fBuffer)->dawnBuffer();
-        fCurrentIndirectBufferOffset = indirect.fOffset;
+}
+
+void DawnCommandBuffer::bindIndirectBuffer(const Buffer* indirectBuffer, size_t offset) {
+    if (indirectBuffer) {
+        fCurrentIndirectBuffer = static_cast<const DawnBuffer*>(indirectBuffer)->dawnBuffer();
+        fCurrentIndirectBufferOffset = offset;
     } else {
         fCurrentIndirectBuffer = nullptr;
         fCurrentIndirectBufferOffset = 0;

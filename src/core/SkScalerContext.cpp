@@ -270,7 +270,7 @@ SkGlyph SkScalerContext::internalMakeGlyph(SkPackedGlyphID packedID, SkMask::For
 
     if (mx.computeFromPath || (fGenerateImageFromPath && !mx.neverRequestPath)) {
         SkDEBUGCODE(glyph.fAdvancesBoundsFormatAndInitialPathDone = true;)
-        this->internalGetPath(glyph, alloc);
+        this->internalGetPath(glyph, alloc, std::move(mx.generatedPath));
         const SkPath* devPath = glyph.path();
         if (devPath) {
             const bool doVert = SkToBool(fRec.fFlags & SkScalerContext::kLCD_Vertical_Flag);
@@ -391,7 +391,7 @@ static void pack4xHToMask(const SkPixmap& src, SkMaskBuilder& dst,
             dstPDelta = dstPB;
         }
 
-        const uint8_t* srcP = src.addr8(0, y);
+        const uint8_t* srcP = SkTAddOffset<const uint8_t>(src.addr(), y * src.rowBytes());
 
         // TODO: this fir filter implementation is straight forward, but slow.
         // It should be possible to make it much faster.
@@ -753,7 +753,7 @@ void SkScalerContext::getImage(const SkGlyph& origGlyph) {
 }
 
 void SkScalerContext::getPath(SkGlyph& glyph, SkArenaAlloc* alloc) {
-    this->internalGetPath(glyph, alloc);
+    this->internalGetPath(glyph, alloc, std::nullopt);
 }
 
 sk_sp<SkDrawable> SkScalerContext::getDrawable(SkGlyph& glyph) {
@@ -771,7 +771,8 @@ void SkScalerContext::getFontMetrics(SkFontMetrics* fm) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void SkScalerContext::internalGetPath(SkGlyph& glyph, SkArenaAlloc* alloc) {
+void SkScalerContext::internalGetPath(SkGlyph& glyph, SkArenaAlloc* alloc,
+                                      std::optional<GeneratedPath>&& generatedPath) {
     SkASSERT(glyph.fAdvancesBoundsFormatAndInitialPathDone);
 
     if (glyph.setPathHasBeenCalled()) {
@@ -784,7 +785,10 @@ void SkScalerContext::internalGetPath(SkGlyph& glyph, SkArenaAlloc* alloc) {
     bool pathModified = false;
 
     SkPackedGlyphID glyphID = glyph.getPackedID();
-    if (!generatePath(glyph, &path, &pathModified)) {
+    if (generatedPath) {
+        path = std::move(generatedPath->path);
+        pathModified = std::move(generatedPath->modified);
+    } else if (!generatePath(glyph, &path, &pathModified)) {
         glyph.setPath(alloc, (SkPath*)nullptr, hairline, pathModified);
         return;
     }
@@ -892,8 +896,7 @@ bool SkScalerContextRec::computeMatrices(PreMatrixScale preMatrixScale, SkVector
     if (skewedOrFlipped) {
         // QR by Givens rotations. G is Q^T and GA is R. G is rotational (no reflections).
         // h is where A maps the horizontal baseline.
-        SkPoint h = SkPoint::Make(SK_Scalar1, 0);
-        A.mapPoints(&h, 1);
+        SkPoint h = A.mapPoint({SK_Scalar1, 0});
 
         // G is the Givens Matrix for A (rotational matrix where GA[0][1] == 0).
         SkMatrix G;

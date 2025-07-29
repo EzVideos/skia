@@ -9,11 +9,14 @@
 #define skgpu_graphite_Device_DEFINED
 
 #include "include/core/SkImage.h"
+#include "include/core/SkRecorder.h"
 #include "include/gpu/GpuTypes.h"
+#include "include/gpu/graphite/Recorder.h"
 #include "src/base/SkEnumBitMask.h"
 #include "src/core/SkDevice.h"
 #include "src/gpu/graphite/ClipStack.h"
 #include "src/gpu/graphite/DrawOrder.h"
+#include "src/gpu/graphite/ResourceTypes.h"
 #include "src/gpu/graphite/geom/Rect.h"
 #include "src/gpu/graphite/geom/Transform.h"
 #include "src/text/gpu/SubRunContainer.h"
@@ -29,12 +32,10 @@ class BoundsManager;
 class Clip;
 class Context;
 class DrawContext;
-enum class DstReadStrategy : uint8_t;
 class Geometry;
 class Image;
 enum class LoadOp : uint8_t;
 class PaintParams;
-class Recorder;
 class Renderer;
 class Shape;
 class StrokeStyle;
@@ -70,6 +71,8 @@ public:
     Device* asGraphiteDevice() override { return this; }
 
     Recorder* recorder() const override { return fRecorder; }
+    SkRecorder* baseRecorder() const override { return fRecorder; }
+
     // This call is triggered from the Recorder on its registered Devices. It is typically called
     // when the Recorder is abandoned or deleted.
     void abandonRecorder() { fRecorder = nullptr; }
@@ -146,8 +149,7 @@ public:
     void drawOval(const SkRect& oval, const SkPaint& paint) override;
     void drawRRect(const SkRRect& rr, const SkPaint& paint) override;
     void drawArc(const SkArc& arc, const SkPaint& paint) override;
-    void drawPoints(SkCanvas::PointMode mode, size_t count,
-                    const SkPoint[], const SkPaint& paint) override;
+    void drawPoints(SkCanvas::PointMode, SkSpan<const SkPoint>, const SkPaint&) override;
     void drawPath(const SkPath& path, const SkPaint& paint, bool pathIsMutable = false) override;
 
     // No need to specialize drawDRRect, drawRegion, drawPatch as the default impls all
@@ -177,8 +179,8 @@ public:
     // TODO: Implement these using per-edge AA quads and an inlined image shader program.
     void drawImageLattice(const SkImage*, const SkCanvas::Lattice&,
                           const SkRect& dst, SkFilterMode, const SkPaint&) override {}
-    void drawAtlas(const SkRSXform[], const SkRect[], const SkColor[], int count, sk_sp<SkBlender>,
-                   const SkPaint&) override {}
+    void drawAtlas(SkSpan<const SkRSXform>, SkSpan<const SkRect>, SkSpan<const SkColor>,
+                   sk_sp<SkBlender>, const SkPaint&) override {}
 
     void drawDrawable(SkCanvas*, SkDrawable*, const SkMatrix*) override {}
     void drawMesh(const SkMesh&, sk_sp<SkBlender>, const SkPaint&) override {}
@@ -275,9 +277,19 @@ private:
     std::pair<const Renderer*, PathAtlas*> chooseRenderer(const Transform& localToDevice,
                                                           const Geometry&,
                                                           const SkStrokeRec&,
+                                                          const Rect& drawBounds,
                                                           bool requireMSAA) const;
 
-    bool needsFlushBeforeDraw(int numNewRenderSteps, DstReadStrategy) const;
+    // TODO(b/390458117): Vulkan must fall back from reading the dst as an input to using dst copies
+    // when we encounter draws that report needing to use MSAA (even when the target reports being
+    // single-sampeld). Sequential draws are not guaranteed to all require this fallback or not.
+    // If going from using the texture copy fallback to reading the dst as an input attachment, we
+    // must perform a flush so that the dst copy is completed prior to reading from it. Flushing
+    // every time we use kReadFromInput would lead to performing unnecessary flushes which is not
+    // optimal. Therefore, store + consult the prior strategy used to determine if we require a
+    // flush. Once b/390458117 is implemented, fPriorDrawDstReadStrategy can be removed.
+    DstReadStrategy fPriorDrawDstReadStrategy = DstReadStrategy::kNoneRequired;
+    bool needsFlushBeforeDraw(int numNewRenderSteps, DstReadStrategy, bool requiresMSAA);
 
     // Flush internal work, such as pending clip draws and atlas uploads, into the Device's DrawTask
     void internalFlush();

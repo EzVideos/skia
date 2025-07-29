@@ -464,9 +464,10 @@ func GenTasks(cfg *Config) {
 			"skia/.bazelversion",
 			"skia/BUILD.bazel",
 			"skia/LICENSE", // Referred to by default_applicable_licenses
+			"skia/MODULE.bazel",
+			"skia/MODULE.bazel.lock",
 			"skia/WORKSPACE.bazel",
 			"skia/bazel",
-			"skia/go_repositories.bzl",
 			"skia/requirements.txt",
 			"skia/toolchain",
 		},
@@ -566,15 +567,17 @@ func GenTasks(cfg *Config) {
 			"skia/.bazelversion",
 			"skia/BUILD.bazel",
 			"skia/LICENSE",
+			"skia/MODULE.bazel",
+			"skia/MODULE.bazel.lock",
 			"skia/WORKSPACE.bazel",
 			"skia/bazel",
-			"skia/go_repositories.bzl",
-			"skia/include/config", // There's a WORKSPACE.bazel in here
+			"skia/go.mod",
+			"skia/go.sum",
+			"skia/include/config", // There's a Bazel workspace in here
 			"skia/requirements.txt",
 			"skia/toolchain",
-			// TODO(kjlubick, lukasza) remove after rust's png crate is updated
-			// and we don't need the patches anymore
-			"skia/experimental/rust_png",
+			// Needed for icu_utils bazel_dep
+			"skia/third_party",
 			// Actually needed to build the task drivers
 			"skia/infra/bots/BUILD.bazel",
 			"skia/infra/bots/build_task_drivers.sh",
@@ -769,11 +772,7 @@ func (b *jobBuilder) deriveCompileTaskName() string {
 			task_os = UBUNTU_22_04_OS
 		} else if b.matchOs("iOS") {
 			ec = append([]string{task_os}, ec...)
-			if b.parts["compiler"] == "Xcode11.4.1" {
-				task_os = "Mac10.15.7"
-			} else {
-				task_os = "Mac"
-			}
+			task_os = "Mac"
 		} else if b.matchOs("Win") {
 			task_os = "Win"
 		} else if b.extraConfig("WasmGMTests") {
@@ -876,8 +875,7 @@ func (b *taskBuilder) defaultSwarmDimensions() {
 			"Debian9":     DEFAULT_OS_LINUX_GCE, // Runs in Deb9 Docker.
 			"Debian11":    DEBIAN_11_OS,
 			"Mac":         DEFAULT_OS_MAC,
-			"Mac10.15.1":  "Mac-10.15.1",
-			"Mac10.15.7":  "Mac-10.15.7",
+			"Mac11":       "Mac-11",
 			"Mac12":       "Mac-12",
 			"Mac13":       "Mac-13",
 			"Mac14":       "Mac-14.7", // Builds run on 14.5, tests on 14.7.
@@ -1155,7 +1153,7 @@ func (b *taskBuilder) defaultSwarmDimensions() {
 			d["gce"] = "1"
 			// Use many-core machines for Build tasks.
 			d["machine_type"] = MACHINE_TYPE_LARGE
-		} else if d["os"] == DEFAULT_OS_MAC || d["os"] == "Mac-10.15.7" {
+		} else if d["os"] == DEFAULT_OS_MAC {
 			// Mac CPU bots are no longer VMs.
 			d["cpu"] = "x86-64"
 			d["cores"] = "12"
@@ -1808,7 +1806,7 @@ func (b *jobBuilder) dm() {
 			}
 		} else {
 			// Default recipe supports direct upload.
-			// TODO(http://skbug.com/11785): Windows jobs are unable to extract gsutil.
+			// TODO(skbug.com/40042855): Windows jobs are unable to extract gsutil.
 			// https://bugs.chromium.org/p/chromium/issues/detail?id=1192611
 			if b.doUpload() && !b.matchOs("Win") {
 				b.directUpload(b.cfg.GsBucketGm, b.cfg.ServiceAccountUploadGM)
@@ -1870,7 +1868,7 @@ func (b *jobBuilder) dm() {
 		} else if b.extraConfig("MSAN") {
 			b.timeout(9 * time.Hour)
 		} else if b.arch("x86") && b.debug() {
-			// skia:6737
+			// skbug.com/40037952
 			b.timeout(6 * time.Hour)
 		} else if b.matchOs("Mac14") {
 			b.timeout(30 * time.Minute)
@@ -2083,7 +2081,7 @@ func (b *jobBuilder) perf() {
 		} else if b.extraConfig("MSAN") {
 			b.timeout(9 * time.Hour)
 		} else if b.parts["arch"] == "x86" && b.parts["configuration"] == "Debug" {
-			// skia:6737
+			// skbug.com/40037952
 			b.timeout(6 * time.Hour)
 		} else if b.matchOs("Mac14") {
 			b.timeout(30 * time.Minute)
@@ -2250,6 +2248,7 @@ var shorthandToLabel = map[string]labelAndSavedOutputDir{
 	"cpu_8888_benchmark_test":    {"//bench:cpu_8888_test", ""},
 	"cpu_gms":                    {"//gm:cpu_gm_tests", ""},
 	"dm":                         {"//dm", ""},
+	"fontations":                 {"//src/ports:fontmgr_fontations_empty", ""},
 	"full_library":               {"//tools:full_build", ""},
 	"ganesh_gl":                  {"//:ganesh_gl", ""},
 	"hello_bazel_world_test":     {"//gm:hello_bazel_world_test", ""},

@@ -14,10 +14,10 @@
 #include "include/core/SkPixelRef.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkPoint.h"
+#include "include/core/SkRecorder.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSize.h"
-#include "include/core/SkSurface.h"
 #include "include/core/SkTypes.h"
 #include "src/base/SkRectMemcpy.h"
 #include "src/core/SkImageInfoPriv.h"
@@ -31,7 +31,7 @@
 class GrDirectContext;
 class SkSurfaceProps;
 
-// fixes https://bug.skia.org/5096
+// fixes skbug.com/40036261
 static bool is_not_subset(const SkBitmap& bm) {
     SkASSERT(bm.pixelRef());
     SkISize dim = SkISize::Make(bm.pixelRef()->width(), bm.pixelRef()->height());
@@ -82,11 +82,15 @@ bool SkImage_Raster::getROPixels(GrDirectContext*, SkBitmap* dst, CachingHint) c
     return true;
 }
 
-sk_sp<SkSurface> SkImage_Raster::onMakeSurface(skgpu::graphite::Recorder*,
+sk_sp<SkSurface> SkImage_Raster::onMakeSurface(SkRecorder* recorder,
                                                const SkImageInfo& info) const {
+    if (!recorder) {
+        // TODO(kjlubick) remove this after old SkImage::makeScaled(image info, sampling) API gone
+        recorder = skcpu::Recorder::TODO();
+    }
     const SkSurfaceProps* props = nullptr;
-    const size_t rowBytes = 0;
-    return SkSurfaces::Raster(info, rowBytes, props);
+    constexpr size_t rowBytes = 0;
+    return recorder->cpuRecorder()->makeBitmapSurface(info, rowBytes, props);
 }
 
 static SkBitmap copy_bitmap_subset(const SkBitmap& orig, const SkIRect& subset) {
@@ -115,7 +119,7 @@ sk_sp<SkImage> SkImage_Raster::onMakeSubset(GrDirectContext*, const SkIRect& sub
     if (copy.isNull()) {
         return nullptr;
     } else {
-        return copy.asImage();
+        return SkImages::RasterFromBitmap(copy);
     }
 }
 
@@ -166,7 +170,7 @@ sk_sp<SkImage> SkImage_Raster::onMakeSubset(skgpu::graphite::Recorder*,
     } else {
         SkBitmap copy = copy_bitmap_subset(fBitmap, subset);
         if (!copy.isNull()) {
-            img = copy.asImage();
+            img = SkImages::RasterFromBitmap(copy);
         }
     }
 
@@ -229,7 +233,7 @@ sk_sp<SkImage> SkImage_Raster::onMakeColorTypeAndColorSpace(SkColorType targetCT
 
     SkAssertResult(dst.writePixels(src));
     dst.setImmutable();
-    return dst.asImage();
+    return SkImages::RasterFromBitmap(dst);
 }
 
 sk_sp<SkImage> SkImage_Raster::onReinterpretColorSpace(sk_sp<SkColorSpace> newCS) const {

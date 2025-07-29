@@ -84,17 +84,19 @@ TessellateWedgesRenderStep::TessellateWedgesRenderStep(RenderStepID renderStepID
                                                        DepthStencilSettings depthStencilSettings,
                                                        StaticBufferManager* bufferManager)
         : RenderStep(renderStepID,
-                     Flags::kRequiresMSAA | Flags::kAppendDynamicInstances |
+                     Flags::kRequiresMSAA |
+                     Flags::kAppendDynamicInstances |
+                     Flags::kIgnoreInverseFill |
                      (depthStencilSettings.fDepthWriteEnabled ? Flags::kPerformsShading
                                                               : Flags::kNone),
                      /*uniforms=*/{{"localToDevice", SkSLType::kFloat4x4}},
                      PrimitiveType::kTriangles,
                      depthStencilSettings,
-                     /*vertexAttrs=*/  {{"resolveLevel_and_idx",
-                                         VertexAttribType::kFloat2, SkSLType::kFloat2}},
-                     /*instanceAttrs=*/kAttributes[infinitySupport])
+                     /*staticAttrs=*/{{"resolveLevel_and_idx",
+                                       VertexAttribType::kFloat2, SkSLType::kFloat2}},
+                     /*appendAttrs=*/kAttributes[infinitySupport])
         , fInfinitySupport(infinitySupport) {
-    SkASSERT(this->instanceStride() ==
+    SkASSERT(this->appendDataStride() ==
              PatchStride(infinitySupport ? kAttribs : kAttribsWithCurveType));
 
     // Initialize the static buffers we'll use when recording draw calls.

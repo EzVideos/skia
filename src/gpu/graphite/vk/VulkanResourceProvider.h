@@ -74,16 +74,14 @@ public:
 
     VkPipelineLayout mockPipelineLayout() const { return fMockPipelineLayout; }
 
-    // TODO(b/302126809): Should these be cached? e.g. findOrCreateFramebuffer
-    sk_sp<VulkanFramebuffer> createFramebuffer(
-        const VulkanSharedContext*,
-        VulkanTexture* colorTexture,
-        VulkanTexture* resolveTexture,
-        VulkanTexture* depthStencilTexture,
-        const RenderPassDesc& renderPassDesc,
-        const VulkanRenderPass&,
-        const int width,
-        const int height);
+    sk_sp<VulkanFramebuffer> findOrCreateFramebuffer(const VulkanSharedContext*,
+                                                     VulkanTexture* colorTexture,
+                                                     VulkanTexture* resolveTexture,
+                                                     VulkanTexture* depthStencilTexture,
+                                                     const RenderPassDesc&,
+                                                     const VulkanRenderPass&,
+                                                     const int width,
+                                                     const int height);
 
 private:
     const VulkanSharedContext* vulkanSharedContext() const;
@@ -120,9 +118,9 @@ private:
     // buffers to perform these operations even before we bind any pipelines.
     VkPipelineLayout fMockPipelineLayout;
 
-    // The first value of the pair is a compatible-only renderpass metadata for the render pass.
-    skia_private::TArray<std::pair<VulkanRenderPass::Metadata,
-                                   sk_sp<VulkanGraphicsPipeline>>> fLoadMSAAPipelines;
+    // The first value of the pair is a hash of the render pass excluding state that make the render
+    // pass compatible, as calcualted by VulkanCaps::GetRenderPassDescKeyForPipeline.
+    skia_private::TArray<std::pair<uint32_t, sk_sp<VulkanGraphicsPipeline>>> fLoadMSAAPipelines;
     // The shader modules and pipeline layout can be shared for all loadMSAA pipelines.
     std::unique_ptr<VulkanProgramInfo> fLoadMSAAProgram;
 
