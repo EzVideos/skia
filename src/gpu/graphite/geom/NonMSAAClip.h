@@ -46,7 +46,7 @@ struct AnalyticClip {
  */
 struct AtlasClip {
     SkIRect             fMaskBounds;
-    SkIPoint            fOutPos;
+    SkIPoint            fOutPos{};
     sk_sp<TextureProxy> fAtlasTexture;
 
     bool isEmpty() const { return !SkToBool(fAtlasTexture.get()); }
